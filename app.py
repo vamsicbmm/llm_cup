@@ -92,7 +92,7 @@ def configure_retriever(extracted_text, source):
                                     model_kwargs={'device': 'cpu'})
     vectorstore = FAISS.from_documents(splits, embeddings)
     retriever = vectorstore.as_retriever( search_kwargs={"k": 3}, search_type="mmr")
-    qa_template = """You are an aviation expert. Your task is to answer the user's question based on the provided information." If you don't understand the information, say you don't now. Don't generate any other answers. If you understand the information, answer the question in a polite and helpful manner. 
+    qa_template = """You are an aviation expert. Your task is to answer the user's question based on the provided information." If you don't understand the information, say you don't know. Don't generate any other answers. If you understand the information, answer the question in a polite and helpful manner. 
     Context: {context}
     Question: {question}
     Helpful Answer: 
@@ -317,6 +317,7 @@ class ShopVisitForecastTool(BaseTool):
         module_name_dict = mapping.map_values_in_dataframe(llp_df, engine_module_llp_data, 'pn', 'part_number', 'module')
         llp_df['module'] = llp_df['pn'].map(module_name_dict)
         print("LLP DF: ", llp_df)
+        shop_visit_forecast = {key: (value*6) if key != 'goalName' else value for key, value in shop_visit_forecast.items()}
         build_goals = [int(value) for key, value in shop_visit_forecast.items() if key!='goalName']
         final_cllp = 0
         for build_goal in build_goals:
