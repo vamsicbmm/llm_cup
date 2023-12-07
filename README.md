@@ -1,5 +1,5 @@
 # llm_cup
-This repo has all the code related to the LLM Cup
+This repo contains the code for FinTwin SkyBot
 
 ## Inspiration
 The existence of an aviation asset is dependent on the physical paperwork. This creates a huge challenge for manually analyzing huge amounts of data. Digitizing the physical paperwork can reduce a lot of manual work and generate value within seconds. The FinTwin Skybot, powered by LLM, can input multiple PDFs and provide crucial insights from the documents.
@@ -39,4 +39,3 @@ We used the RAG (Retrieval Augumentation Generation) system to retrieve the rele
 
 
 **Step2**: Run ```streamlit run app.py```
-This repo contains the code for FinTwin SkyBot
