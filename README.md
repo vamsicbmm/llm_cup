@@ -36,5 +36,7 @@ We used the RAG (Retrieval Augumentation Generation) system to retrieve the rele
 ## How to run the code? 
 
 **Step1**: Run ``requirements.txt``
+
+
 **Step2**: Run ```streamlit run app.py```
 This repo contains the code for FinTwin SkyBot
