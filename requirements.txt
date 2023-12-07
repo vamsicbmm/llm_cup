@@ -5,12 +5,3 @@ azure-storage-blob
 sentence-transformers
 transformers
 faiss-cpu
---index-url
-https://kf-pypi-pkg-repo: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@kf-private-pypi.azurewebsites.net/simple/
-kf_data_pipeline==4.0.0.202310170903.rc
---index-url
-https://kf-pypi-pkg-repo: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@kf-private-pypi.azurewebsites.net/simple/
-kf_fintwin==1.0.0.202309141300.rc
---index-url
-https://kf-pypi-pkg-repo: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@kf-private-pypi.azurewebsites.net/simple/
-kf_fintwin_eaoe==1.0.0.202310091510.rc
