@@ -48,15 +48,15 @@ st.title("✈️ FinTwin Skybot - Chat with documents")
 
 # Defining AzureOpenAI Keys
 openai.api_type = "azure" 
-openai.api_base =  "https://kf-llm-ins-2.openai.azure.com/" # Your Azure OpenAI resource's endpoint value.
-openai.api_key = "49b50a14e4e647c39d4522d8c0774119"
-os.environ["OPENAI_API_KEY"] = "49b50a14e4e647c39d4522d8c0774119"
+openai.api_base =  "<api-base>" # Your Azure OpenAI resource's endpoint value.
+openai.api_key = "<api-key>"
+os.environ["OPENAI_API_KEY"] = "<api-key>"
 os.environ["OPENAI_API_VERSION"] = "2023-07-01-preview"
-os.environ["OPENAI_API_BASE"] = "https://kf-llm-ins-2.openai.azure.com/"
-os.environ["SERPAPI_API_KEY"] = "4ea6865054c8eb8608723170dd33e12314d8e182c10c16ee15565ccf03526e8e"
+os.environ["OPENAI_API_BASE"] = "<api-base>"
+os.environ["SERPAPI_API_KEY"] = "<api-key>"
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGCHAIN_API_KEY"] = "ls__c59a63b6ae494b5f97af20b35c96f711"
+os.environ["LANGCHAIN_ENDPOINT"] = "<langsmith-endpoint>"
+os.environ["LANGCHAIN_API_KEY"] = "<api-key>"
 os.environ["LANGCHAIN_PROJECT"] = "tracing_agent"
 
 
