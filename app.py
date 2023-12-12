@@ -55,7 +55,7 @@ os.environ["OPENAI_API_VERSION"] = "2023-07-01-preview"
 os.environ["OPENAI_API_BASE"] = "<api-base>"
 os.environ["SERPAPI_API_KEY"] = "<api-key>"
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+os.environ["LANGCHAIN_ENDPOINT"] = "<langsmith-endpoint>"
 os.environ["LANGCHAIN_API_KEY"] = "<api-key>"
 os.environ["LANGCHAIN_PROJECT"] = "tracing_agent"
 
