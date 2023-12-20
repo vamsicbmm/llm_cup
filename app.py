@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import requests
 import base64
 import time
 import openai
@@ -12,7 +13,7 @@ from kfocr.core.kfocr_api import KFocr
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.agents import Tool, AgentExecutor, LLMSingleActionAgent, AgentOutputParser
 from langchain.schema import AgentAction, AgentFinish, OutputParserException
-from langchain.embeddings import HuggingFaceEmbeddings, HuggingFaceInstructEmbeddings
+from langchain.embeddings import HuggingFaceEmbeddings, HuggingFaceInstructEmbeddings, FakeEmbeddings
 from langchain.schema import Document
 from langchain.vectorstores import FAISS
 from langchain.chat_models import AzureChatOpenAI
@@ -72,6 +73,17 @@ llm_instruct = AzureOpenAI(
     deployment_name="kf-gpt-turbo-instruct", model_name="gpt-35-turbo-instruct", temperature= 0
 )
 
+# Defining custom embeddings class
+class AviationEmbeddings(FakeEmbeddings):
+    
+    def embed_query(self, text):
+        embeddings = score_model([text])["predictions"][0]
+        return embeddings
+    
+    def embed_documents(self, texts):
+        embeddings = score_model(texts)["predictions"]
+        return embeddings
+
 
 @st.cache_resource(ttl="1h", show_spinner=False)
 def configure_retriever(extracted_text, source):
@@ -97,8 +109,9 @@ def configure_retriever(extracted_text, source):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size = 500, chunk_overlap = 32)
     splits = text_splitter.split_documents(docs)
     # Load embeddings model
-    embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2',
-                                    model_kwargs={'device': 'cpu'})
+    # embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2',
+    #                                 model_kwargs={'device': 'cpu'})
+    embeddings = AviationEmbeddings(size=788)
     vectorstore = FAISS.from_documents(splits, embeddings)
     retriever = vectorstore.as_retriever( search_kwargs={"k": 3}, search_type="mmr")
     qa_template = """You are an aviation expert. Your task is to answer the user's question based on the provided information." If you don't understand the information, say you don't know. Don't generate any other answers. If you understand the information, answer the question in a polite and helpful manner. 
@@ -166,6 +179,25 @@ def process_llm_response(llm_response):
     """    
     llm_response['result'] = wrap_text_preserve_newlines(llm_response['result'])
     return llm_response
+
+def score_model(dataset):
+    """
+    Sends a POST request to the embedding serving endpoint
+
+    Arguments:
+        dataset {list}  :   The list of input documents
+
+    Returns:
+        {dictionary}  : The JSON response containing the model's predictions   
+    """
+    url = 'https://adb-1035245746367987.7.azuredatabricks.net/serving-endpoints/aviation_tuned_embedding/invocations'
+    headers = {'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}
+    ds_dict ={"inputs": dataset}
+    data_json = json.dumps(ds_dict, allow_nan=True)
+    response = requests.request(method='POST', headers=headers, url=url, data=data_json)
+    if response.status_code != 200:
+        raise Exception(f'Request failed with status {response.status_code}, {response.text}')
+    return response.json()
 
 # Upload files to Azure Blob Storage
 def upload_file_to_blob(connection_string: str, container_name: str, blob_path: str, blob_content, content_type: str = "application/pdf"):

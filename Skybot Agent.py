@@ -478,7 +478,7 @@ agent = initialize_agent(tools,
 
 # COMMAND ----------
 
-prompt = "Was the engine subjected to any incident or accident?"
+prompt = "Was the engine involved in any incident or accident?"
 agent.run(prompt)
 
 # COMMAND ----------
