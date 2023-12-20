@@ -1,6 +1,13 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Imports
+
+# COMMAND ----------
+
 import os
 import re
 import json
+import requests
 import base64
 import time
 import openai
@@ -10,9 +17,9 @@ from itertools import zip_longest
 from typing import List, Union, Optional, Type, Dict, Tuple
 from kfocr.core.kfocr_api import KFocr
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.agents import Tool, AgentExecutor, LLMSingleActionAgent, AgentOutputParser
+from langchain.agents import Tool, AgentExecutor, AgentOutputParser, AgentType, initialize_agent, load_tools
 from langchain.schema import AgentAction, AgentFinish, OutputParserException
-from langchain.embeddings import HuggingFaceEmbeddings, HuggingFaceInstructEmbeddings
+from langchain.embeddings import HuggingFaceEmbeddings, HuggingFaceInstructEmbeddings, FakeEmbeddings
 from langchain.schema import Document
 from langchain.vectorstores import FAISS
 from langchain.chat_models import AzureChatOpenAI
@@ -23,57 +30,106 @@ from langchain.schema.document import Document
 from langchain.agents import AgentType
 from pydantic import BaseModel, Field
 
-from azure.storage.blob import ContainerClient,BlobServiceClient,BlobServiceClient,BlobSasPermissions,generate_blob_sas,ContentSettings
-from datetime import datetime, timedelta
-from hashlib import sha256
-
 from kfocr.assets.ipl.ocr_processor.LlpProcessor import LlpProcessor
 from kfocr.assets.ipl.ocr_processor.EAProcessor import EAProcessor
 from modules.shop_visit_forecast.model.foreacsting_models import ForecastingModels
-from kf_fintwin.utils import helpers
+from kf_fintwin.utils import helpers, defines
 from kf_fintwin.modules.workscope_module.prediction import module_code_to_name, modules_factory
 from modules.shop_visit_cost import cost_estimator
 from kf_fintwin.modules.llp_module import llp_cost_mapping
-from kf_fintwin.utils import defines
 from kfocr.assets.ipl.data_transform import DataTransform
-from langchain.agents import AgentType, initialize_agent, load_tools
 from langchain.tools import BaseTool
 from langchain.chains.conversation.memory import ConversationBufferWindowMemory
-from langchain.agents import initialize_agent
-from langchain.callbacks import StreamlitCallbackHandler
-import streamlit as st
 
-st.set_page_config(page_title="FinTwin Agent", page_icon="✈️")
-st.title("✈️ FinTwin Skybot - Chat with documents")
+# COMMAND ----------
 
-# Defining AzureOpenAI Keys
-openai.api_type = "azure" 
-openai.api_base =  "<api-base>" # Your Azure OpenAI resource's endpoint value.
-openai.api_key = "<api-key>"
-os.environ["OPENAI_API_KEY"] = "<api-key>"
-os.environ["OPENAI_API_VERSION"] = "2023-07-01-preview"
-os.environ["OPENAI_API_BASE"] = "<api-base>"
-os.environ["SERPAPI_API_KEY"] = "<api-key>"
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_ENDPOINT"] = "<langsmith-endpoint>"
-os.environ["LANGCHAIN_API_KEY"] = "<api-key>"
-os.environ["LANGCHAIN_PROJECT"] = "tracing_agent"
+# MAGIC %md
+# MAGIC # Azure Open AI keys
+# MAGIC The Azure keys are used to identify the Azure Open AI GPT model under the specified subscription.
 
+# COMMAND ----------
 
-STORAGE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=kfhackathonstorage;AccountKey=n5zFDF3EIX+q0J6x4xDlBjTvGmphRIHGnMh6Ed8Eo25oX1VYih0j5313cpYAUIVr+Nmda6Q8raCk+AStstbxZg==;EndpointSuffix=core.windows.net;"
-STORAGE_CONTAINER_NAME    = "llmcup"
+openai.api_type                     = "azure"
+# Your Azure OpenAI resource's endpoint value.
+openai.api_base                     =  "https://kf-llm-ins-2.openai.azure.com/" 
+openai.api_key                      = "49b50a14e4e647c39d4522d8c0774119"
+os.environ["OPENAI_API_KEY"]        = "49b50a14e4e647c39d4522d8c0774119"
+os.environ["OPENAI_API_VERSION"]    = "2023-07-01-preview"
+os.environ["OPENAI_API_BASE"]       = "https://kf-llm-ins-2.openai.azure.com/"
+os.environ["SERPAPI_API_KEY"]       = "4ea6865054c8eb8608723170dd33e12314d8e182c10c16ee15565ccf03526e8e"
+# configure runtime environment for LangSmith tracing.
+os.environ["LANGCHAIN_TRACING_V2"]  = "true"
+os.environ["LANGCHAIN_ENDPOINT"]    = "https://api.smith.langchain.com"
+os.environ["LANGCHAIN_API_KEY"]     = "ls__c59a63b6ae494b5f97af20b35c96f711"
+os.environ["LANGCHAIN_PROJECT"]     = "tracing_agent"
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Instantiate the LLMs and Conversational Memory
+
+# COMMAND ----------
 
 # Instantiate LLMs
 llm = AzureChatOpenAI(
-        deployment_name='kf-gpt-35-turbo-0613', model_name='gpt-35-turbo', temperature=0
+        deployment_name = 'kf-gpt-35-turbo-0613',
+        model_name      = 'gpt-35-turbo',
+        temperature     = 0
 )
 
 llm_instruct = AzureOpenAI(
-    deployment_name="kf-gpt-turbo-instruct", model_name="gpt-35-turbo-instruct", temperature= 0
+    deployment_name     = "kf-gpt-turbo-instruct",
+    model_name          = "gpt-35-turbo-instruct",
+    temperature         = 0
 )
 
+# Initialize conversational memory
+conversational_memory = ConversationBufferWindowMemory(
+        memory_key      = 'chat_history',
+        k               = 1,
+        return_messages = True
+)
 
-@st.cache_resource(ttl="1h", show_spinner=False)
+access_token = "dapi1a838640f6454fc76647e9d0193649b8-2"
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Get the SaS url of the document to be analyzed
+
+# COMMAND ----------
+
+document_url = 'https://virgodatalakestorage.blob.core.windows.net/tenant0001/raw/pdfs/1481642363_mini_pack%20(1).pdf?sv=2023-01-03&st=2023-11-01T08%3A09%3A52Z&se=2024-02-01T06%3A42%3A00Z&sr=b&sp=r&sig=5psFqELAkcP2kGrYK2i7fFkmhmkSCz9VRdQAqhO5TGU%3D'
+esn = 'V10753'
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Define the master data paths to be used by the agent tools
+
+# COMMAND ----------
+
+engine_module_llp_data = pd.read_csv('https://kfhackathonstorage.blob.core.windows.net/llmcup/engine_module_llp_data%20(2).csv?sv=2021-10-04&st=2023-12-19T07%3A07%3A04Z&se=2025-01-20T07%3A07%3A00Z&sr=b&sp=racw&sig=rm5xowLdCIFecr5x1OpsX9h2jSqbgM5JBVGkLmsCrP4%3D')
+cost_df = pd.read_csv('https://kfhackathonstorage.blob.core.windows.net/llmcup/Cost_data_V2500.csv?sv=2021-10-04&st=2023-12-19T07%3A08%3A05Z&se=2024-12-20T07%3A08%3A00Z&sr=b&sp=racw&sig=gfsgCYJYRNtL0%2ByP609Grl2zQff30R6ZT3u%2F4N1we%2FI%3D')
+
+# COMMAND ----------
+
+# MAGIC %md 
+# MAGIC ###Defining Utilities Functions
+
+# COMMAND ----------
+
+# Defining custom embeddings class
+class AviationEmbeddings(FakeEmbeddings):
+    
+    def embed_query(self, text):
+        embeddings = score_model([text])["predictions"][0]
+        return embeddings
+    
+    def embed_documents(self, texts):
+        embeddings = score_model(texts)["predictions"]
+        return embeddings
+
 def configure_retriever(extracted_text, source):
     """
     Creates a chain for Retrieval Question Answering using a FAISS store based retriever and pretrained sentence embeddings. 
@@ -84,12 +140,12 @@ def configure_retriever(extracted_text, source):
     Returns:
         {object} : An instance of the class BaseRetrievalQA
     """
-    meta_data = {}
-    docs = []
+    meta_data   = {}
+    docs        = []
     for text_data in extracted_text:
         meta_data = {}
         page_data = text_data["text"]
-        meta_data["page"] = text_data['page']
+        meta_data["page"]   = text_data['page']
         meta_data["source"] = source
         document = Document(page_content= page_data, metadata= meta_data)
         docs.append(document)
@@ -97,8 +153,9 @@ def configure_retriever(extracted_text, source):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size = 500, chunk_overlap = 32)
     splits = text_splitter.split_documents(docs)
     # Load embeddings model
-    embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2',
-                                    model_kwargs={'device': 'cpu'})
+    # embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2',
+    #                                    model_kwargs={'device': 'cpu'})
+    embeddings = AviationEmbeddings(size=788)
     vectorstore = FAISS.from_documents(splits, embeddings)
     retriever = vectorstore.as_retriever( search_kwargs={"k": 3}, search_type="mmr")
     qa_template = """You are an aviation expert. Your task is to answer the user's question based on the provided information." If you don't understand the information, say you don't know. Don't generate any other answers. If you understand the information, answer the question in a polite and helpful manner. 
@@ -118,7 +175,6 @@ def configure_retriever(extracted_text, source):
     
     return qa_chain
 
-@st.cache_resource(ttl="1h", show_spinner=False)
 def ocr_extraction(document_url):
     """
     Function to perform ocr from a document SAS URL.
@@ -126,15 +182,15 @@ def ocr_extraction(document_url):
         document_url    {string}    : SAS URL of the document
 
     Returns:
-        {dict}      : A dictionary containing the extracted information.
+        {dictionary}      : A dictionary containing the extracted information.
         {list}      : List of page wise OCR extractions
-    """    
+    """
     kf_ocr = KFocr(document_url)
     extracted_info = kf_ocr.analyze_dict
     extracted_text = kf_ocr.get_page_text()
     return extracted_info, extracted_text
 
-def wrap_text_preserve_newlines(text, width=110):
+def wrap_text_preserve_newlines(text, width = 110):
     """
     Wrap the input text while preserving existing newline characters.
     Arguments:
@@ -163,121 +219,48 @@ def process_llm_response(llm_response):
 
     Returns:
         {dictionary}  : The processed dictionary
-    """    
+    """
     llm_response['result'] = wrap_text_preserve_newlines(llm_response['result'])
-    return llm_response
+    return llm_response    
 
-# Upload files to Azure Blob Storage
-def upload_file_to_blob(connection_string: str, container_name: str, blob_path: str, blob_content, content_type: str = "application/pdf"):
+def score_model(dataset):
     """
-    Uploads a file to an Azure Blob Storage container.
+    Sends a POST request to the embedding serving endpoint
+
     Arguments:
-        connection_string   {string}    :   The connection string for the Azure Storage account.
-        container_name      {string}    :   The name of the container within the Azure Storage account.
-        blob_path           {string}    :   The path to the blob within the container.
-        blob_content        {bytes}     :   The content to be uploaded as bytes
-        content_type        {string}    :   The content type of the blob
+        dataset {list}  :   The list of input documents
 
     Returns:
-        {ContainerClient}   :   An instance of the Azure Blob Storage ContainerClient
-    """    
-    # Instantiate a BlobServiceClient using a connection string
-    blob_service_client = ContainerClient.from_connection_string(conn_str=connection_string,container_name = container_name)
-    # Upload a blob to the container
-    content_settings = ContentSettings(content_type=content_type)
-    blob_service_client.upload_blob(blob_path, blob_content, overwrite=True, content_settings=content_settings, encoding='utf-8')
-    return blob_service_client
-
-def get_blob_sas_url(connection_string: str, container_name: str, blob_path: str, storedPolicyName:str=None, expiryInMinutes:int = 30):
+        {dictionary}  : The JSON response containing the model's predictions   
     """
-    Generate a Shared Access Signature (SAS) URL for accessing a blob in Azure Blob Storage.
-    Arguments:
-        connection_string    {string}   :   The connection string for the Azure Storage account.
-        container_name       {string}   :   The name of the container within the Azure Storage account.
-        blob_path            {string}   :   The path to the blob within the container.
-        storedPolicyName     {string}   :   The stored access policy name.
-        expiryInMinutes      {integer}  :   The validity period of the SAS token in minutes.
-
-    Returns:
-        {string}    :   The SAS URL for accessing the specified blob. 
-    """     
-    # Instantiate a BlobServiceClient using a connection string
-    blob_service_client = BlobServiceClient.from_connection_string(conn_str=connection_string)
-    # Get a reference to a container
-    container_client = blob_service_client.get_container_client(container_name)
-    # Get a reference to a blob
-    blob_client = container_client.get_blob_client(blob_path)
-    # Genarate the blob permission
-    blob_sas_permissions = BlobSasPermissions(read=True)      
-
-    # Genrate blob sas
-    sas_token = generate_blob_sas(
-        blob_client.account_name,
-        blob_client.container_name,
-        blob_client.blob_name,
-        account_key=blob_client.credential.account_key,
-        permission=blob_sas_permissions,
-        expiry=datetime.utcnow() + timedelta(minutes=expiryInMinutes)
-    )
-    sas_url = blob_client.url +'?'+ sas_token
-    print("The sas url: ", sas_url)
-    return sas_url
-
-def set_bg(main_bg):
-    """
-    Function to unpack an image from root folder and set as background for the UI
-    Arguments:
-        main_bg    {string}    :    Path to the file containing the background image 
-    """        
-    # set bg name
-    main_bg_ext = "png"
-        
-    st.markdown(
-         f"""
-         <style>
-         .stApp {{
-             background: url(data:image/{main_bg_ext};base64,{base64.b64encode(open(main_bg, "rb").read()).decode()});
-             background-size: cover
-         }}
-         </style>
-         """,
-         unsafe_allow_html=True
-     )
+    url = 'https://adb-1035245746367987.7.azuredatabricks.net/serving-endpoints/aviation_tuned_embedding/invocations'
+    headers = {'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}
+    ds_dict ={"inputs": dataset}
+    data_json = json.dumps(ds_dict, allow_nan=True)
+    response = requests.request(method='POST', headers=headers, url=url, data=data_json)
+    if response.status_code != 200:
+        raise Exception(f'Request failed with status {response.status_code}, {response.text}')
+    return response.json()
 
 
+# COMMAND ----------
 
-# Check if it's the first interaction
-if "initialized" not in st.session_state:
-    st.session_state.initialized = True
+extracted_info, extracted_text = ocr_extraction(document_url)
+retriever_chain = configure_retriever(extracted_text, esn)
 
-set_bg('kf_bg.png')
-st.chat_message("assistant").write("Ready to take off with insights? 👋 Welcome to SkyBot! Upload your document, engage in conversation, and let me be your guide through the skies of information. 📂✈️")
+# COMMAND ----------
 
-uploaded_file = st.file_uploader("Choose the PDF file", accept_multiple_files=False)
-if uploaded_file:
-    bytes_data = uploaded_file.read()
-    upload_file_to_blob(STORAGE_CONNECTION_STRING, STORAGE_CONTAINER_NAME, "app_data/"+uploaded_file.name, bytes_data)
-    st.session_state.document_url = get_blob_sas_url(STORAGE_CONNECTION_STRING, STORAGE_CONTAINER_NAME, "app_data/"+uploaded_file.name)
-else:
-    st.info("Please upload the PDF to continue..")
-    st.stop()
+# MAGIC %md 
+# MAGIC ## Define Tools to be used by Agent
 
-st.session_state.esn = st.text_input("Enter the Engine Serial Number: ")
-
-if "extracted_info" not in st.session_state and "retriever_chain" not in st.session_state:
-    with st.spinner("Please wait.. processing the document.."):
-        st.session_state.extracted_info, st.session_state.extracted_text = ocr_extraction(st.session_state.document_url)
-        st.session_state.retriever_chain = configure_retriever(st.session_state.extracted_text, st.session_state.esn)
-
-st.session_state.engine_module_llp_data = pd.read_csv('https://kfhackathonstorage.blob.core.windows.net/llmcup/engine_module_llp_data%20(2).csv?sv=2021-10-04&st=2023-12-19T07%3A07%3A04Z&se=2025-01-20T07%3A07%3A00Z&sr=b&sp=racw&sig=rm5xowLdCIFecr5x1OpsX9h2jSqbgM5JBVGkLmsCrP4%3D')
-st.session_state.cost_df = pd.read_csv('https://kfhackathonstorage.blob.core.windows.net/llmcup/Cost_data_V2500.csv?sv=2021-10-04&st=2023-12-19T07%3A08%3A05Z&se=2024-12-20T07%3A08%3A00Z&sr=b&sp=racw&sig=gfsgCYJYRNtL0%2ByP609Grl2zQff30R6ZT3u%2F4N1we%2FI%3D')
+# COMMAND ----------
 
 class KnowledgeBaseQuery(BaseModel):
     """Input Query to the Knowledge_Base_Tool function"""
     query: str = Field(..., description="The user's input question")
 
 class ShopVisitForecastInput(BaseModel):
-    """Inputs for the  Shop_Visit_Forecaster function."""
+    """Inputs for the Shop_Visit_Forecaster function."""
     llp_tables: List = Field(..., description = "The Llp details returned by the Llp_Processor function. You must first call the Llp_Processor function to get the llp_tables") 
 
 class EAProcessorTool(BaseTool):
@@ -289,7 +272,9 @@ class EAProcessorTool(BaseTool):
                     cSO - Cycles Since Overhaul
                     tSR - Time Since Repair
                     cSR - Cycles Since Repair"""
+    # return_direct = True
 
+    # args_schema: Type[BaseModel] = EAProcessorInput
     def _to_args_and_kwargs(self, tool_input: Union[str, Dict]) -> Tuple[Tuple, Dict]:
         """
         Function to to make sure this tool takes no input
@@ -310,15 +295,12 @@ class EAProcessorTool(BaseTool):
             {dictionary}    :   The engine details processed by EAProcessor
         """
         ea_processor = EAProcessor()
-        ea_table = ea_processor.process(st.session_state.extracted_info)
+        ea_table = ea_processor.process(extracted_info)
         return ea_table
     
     def _arun(self, query: str):
         """
         Function to run the tool asynchronously
-        
-        Arguments:
-            query  {str}  : input query given by user  
         """
         raise NotImplementedError("This tool does not support async")
     
@@ -326,10 +308,9 @@ class OcrLlpProcessorTool(BaseTool):
     name = "Llp_Processor"
     description = "Use this tool when you are asked to extract LLP details. You must also first call this function when you are asked to forecast the next shop visit. This tool takes no input"
 
-
     def _to_args_and_kwargs(self, tool_input: Union[str, Dict]) -> Tuple[Tuple, Dict]:
         """
-        Function to to make sure this tool takes no input
+        Function to make sure this tool takes no input
 
         Arguments:
             tool_input  {Union[str, Dict]}  :   The input provided to this too
@@ -347,18 +328,15 @@ class OcrLlpProcessorTool(BaseTool):
             {List}    :   The extracted LLP details 
         """
         llp_processor = LlpProcessor()
-        parts_list = st.session_state.engine_module_llp_data['part_number'].tolist()
-        limit_list = st.session_state.engine_module_llp_data['limit'].tolist()
-        llp_tables = llp_processor.process(st.session_state.extracted_info, parts_list, limit_list)
+        parts_list = engine_module_llp_data['part_number'].tolist()
+        limit_list = engine_module_llp_data['limit'].tolist()
+        llp_tables = llp_processor.process(extracted_info, parts_list, limit_list)
         llp_tables = llp_tables[0] if isinstance(llp_tables[0], list) else llp_tables
         return llp_tables
     
     def _arun(self, query: str):
         """
         Function to run the tool asynchronously
-        
-        Arguments:
-            query  {str}  : input query given by user 
         """
         raise NotImplementedError("This tool does not support async")
     
@@ -368,6 +346,7 @@ class ShopVisitForecastTool(BaseTool):
     description = """Use this tool when you asked to forecast the next shop visit for an engine. You must first call the Llp_Processor tool and use its output for this function. 
     The input to this tool should be the entire full observation from the Llp_Processor tool.The entire output of Llp Processor tool must be passed as an input to this tool. 
     The output from this tool must contain the number of cycles for each shop visit, such as Shop Visit 1:, Shop Visit 2:, etc followed by the total cost in dollars. """
+
 
     args_schema: Type[BaseModel] = ShopVisitForecastInput
 
@@ -382,11 +361,12 @@ class ShopVisitForecastTool(BaseTool):
             {dictionary}    :   The result of shop visit forecast containing the forecasted cycles and total cost
         """
         forecasting_models = ForecastingModels()
-        engine_module_llp_df = st.session_state.engine_module_llp_data[st.session_state.engine_module_llp_data['enginefamily'] == 'CFM56-3B'][['part_number', 'limit', 'module']]
+        engine_module_llp_df = engine_module_llp_data[engine_module_llp_data['enginefamily'] == 'CFM56-3B'][['part_number', 'limit', 'module']]
         parts_limits_list = engine_module_llp_df[['part_number', 'limit']].to_dict(orient='records')
 
         mapping = helpers.GetInfo()
         default = defines.Initialize()
+        total_forecasted_cycles = 7200
     
         llp_table = llp_tables
         augmented_llp_table = []
@@ -404,8 +384,8 @@ class ShopVisitForecastTool(BaseTool):
                 llp_details_dict['limit'] = aux_dict[entry['pn']]
                 llp_details_dict['rem_cycles'] = int(llp_details_dict['limit']) - entry['csn']
                 augmented_llp_table.append(llp_details_dict)
-        
-        
+
+
         llp_df = pd.DataFrame(augmented_llp_table)
 
         # forecast the shop visit based on the llp table
@@ -446,9 +426,8 @@ class ShopVisitForecastTool(BaseTool):
     def _arun(self, query: str):
         """
         Function to run the tool asynchronously
-        
         Arguments:
-            query  {str}  : input query given by user 
+            query  {string}  : The input query provided by user
         """
         raise NotImplementedError("This tool does not support async")
 
@@ -468,27 +447,40 @@ class KnowledgeBase(BaseTool):
         Returns:
             {dictionary}    :   The processed LLM response
         """
-        llm_response = st.session_state.retriever_chain(query)
+        llm_response = retriever_chain(query)
         final_response = process_llm_response(llm_response)
         return final_response
     
     def _arun(self, query: str):
         """
         Function to run the tool asynchronously
-        
         Arguments:
-            query  {str}  : input query given by user 
+            query  {string}  : The input query provided by user
         """
         raise NotImplementedError("This tool does not support async")
-    
 
 tools = [OcrLlpProcessorTool(), EAProcessorTool(), ShopVisitForecastTool(), KnowledgeBase()]
-agent = initialize_agent(tools, llm, agent=AgentType.OPENAI_FUNCTIONS, verbose=True)
 
-st.chat_message("assistant").write("Thanks for sharing the document. Please put forward your question, and I'll do my best to help you.")
-if prompt := st.chat_input("Ask me questions about the document!"):
-    st.chat_message("user").write(prompt)
-    with st.chat_message("assistant"):
-        st_callback = StreamlitCallbackHandler(st.container())
-        response = agent.run(prompt, callbacks=[st_callback])
-        st.write(response)
+# initialize agent with tools
+agent = initialize_agent(tools,
+                         llm,
+                         agent = AgentType.OPENAI_FUNCTIONS,
+                         verbose = True)
+
+# agent = initialize_agent(
+#     agent='zero-shot-react-description',
+#     tools=tools,
+#     llm=llm,
+#     verbose=True,
+#     early_stopping_method='generate', 
+#     handle_parsing_errors = True
+# )
+
+# COMMAND ----------
+
+prompt = "Was the engine subjected to any incident or accident?"
+agent.run(prompt)
+
+# COMMAND ----------
+
+
